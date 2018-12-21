@@ -72,7 +72,7 @@ fn parallel_tree_ops() {
     let t = Arc::new(sled::Tree::start(config.clone()).unwrap());
     par! {t, |tree: &Tree, k: Vec<u8>| {
         assert_eq!(tree.get(&*k), Ok(None));
-        tree.set(&k, k.clone()).expect("we should write successfully");
+        tree.set(&*k, k.clone()).expect("we should write successfully");
         assert_eq!(tree.get(&*k).unwrap().expect("we should read what we just wrote"), k);
     }};
 
@@ -121,7 +121,7 @@ fn parallel_tree_ops() {
         let k1 = k.clone();
         let mut k2 = k.clone();
         k2.reverse();
-        tree.cas(&k1, Some(&*k1), Some(k2)).unwrap();
+        tree.cas(&*k1, Some(&*k1), Some(k2)).unwrap();
     }};
 
     drop(t);
@@ -166,7 +166,7 @@ fn tree_subdir() {
         .build();
     let t = sled::Tree::start(config).unwrap();
 
-    t.set(&[1], vec![1]).unwrap();
+    t.set(vec![1], vec![1]).unwrap();
 
     drop(t);
 
@@ -194,7 +194,7 @@ fn tree_iterator() {
     let t = sled::Tree::start(config).unwrap();
     for i in 0..N_PER_THREAD {
         let k = kv(i);
-        t.set(&k, k.clone()).unwrap();
+        t.set(&*k, k.clone()).unwrap();
     }
 
     for (i, (k, v)) in t.iter().map(|res| res.unwrap()).enumerate() {
@@ -203,8 +203,7 @@ fn tree_iterator() {
         assert_eq!(should_be, &*v);
     }
 
-    for (i, (k, v)) in t.scan(b"").map(|res| res.unwrap()).enumerate()
-    {
+    for (i, (k, v)) in t.iter().map(|res| res.unwrap()).enumerate() {
         let should_be = kv(i);
         assert_eq!(should_be, k);
         assert_eq!(should_be, &*v);
@@ -237,12 +236,12 @@ fn tree_range() {
         .build();
     let t = sled::Tree::start(config).unwrap();
 
-    t.set(b"0", vec![0]).unwrap();
-    t.set(b"1", vec![10]).unwrap();
-    t.set(b"2", vec![20]).unwrap();
-    t.set(b"3", vec![30]).unwrap();
-    t.set(b"4", vec![40]).unwrap();
-    t.set(b"5", vec![50]).unwrap();
+    t.set(b"0".to_vec(), vec![0]).unwrap();
+    t.set(b"1".to_vec(), vec![10]).unwrap();
+    t.set(b"2".to_vec(), vec![20]).unwrap();
+    t.set(b"3".to_vec(), vec![30]).unwrap();
+    t.set(b"4".to_vec(), vec![40]).unwrap();
+    t.set(b"5".to_vec(), vec![50]).unwrap();
 
     let start: &[u8] = b"2";
     let end: &[u8] = b"4";
@@ -258,14 +257,14 @@ fn tree_range() {
     assert_eq!(r.next().unwrap().unwrap().0, b"2");
     assert_eq!(r.next(), None);
 
-    let mut r = t.scan(b"2");
+    let mut r = t.scan(b"2".to_vec());
     assert_eq!(r.next().unwrap().unwrap().0, b"2");
     assert_eq!(r.next().unwrap().unwrap().0, b"3");
     assert_eq!(r.next().unwrap().unwrap().0, b"4");
     assert_eq!(r.next().unwrap().unwrap().0, b"5");
     assert_eq!(r.next(), None);
 
-    let mut r = t.scan(b"2").rev();
+    let mut r = t.scan(b"2".to_vec()).rev();
     assert_eq!(r.next().unwrap().unwrap().0, b"2");
     assert_eq!(r.next().unwrap().unwrap().0, b"1");
     assert_eq!(r.next().unwrap().unwrap().0, b"0");
@@ -284,7 +283,7 @@ fn recover_tree() {
     let t = sled::Tree::start(config.clone()).unwrap();
     for i in 0..N_PER_THREAD {
         let k = kv(i);
-        t.set(&k, k.clone()).unwrap();
+        t.set(&*k, k.clone()).unwrap();
     }
     drop(t);
 

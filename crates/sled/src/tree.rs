@@ -1,5 +1,5 @@
 use std::{
-    borrow::Cow,
+    borrow::{Borrow, Cow},
     cmp::Ordering::{Greater, Less},
     fmt::{self, Debug},
     ops::{self, RangeBounds},
@@ -38,21 +38,21 @@ impl<'a> IntoIterator for &'a Tree {
 /// ```
 /// let t = sled::Tree::start_default("path_to_my_database").unwrap();
 ///
-/// t.set(b"yo!", b"v1".to_vec());
-/// assert!(t.get(b"yo!").unwrap().unwrap() == &*b"v1".to_vec());
+/// t.set(b"yo!".to_vec(), b"v1".to_vec());
+/// assert!(t.get(b"yo!".to_vec()).unwrap().unwrap() == &*b"v1".to_vec());
 ///
 /// t.cas(
-///     b"yo!",                // key
+///     b"yo!".to_vec(),       // key
 ///     Some(b"v1"),           // old value, None for not present
 ///     Some(b"v2".to_vec()),  // new value, None for delete
 /// ).unwrap();
 ///
-/// let mut iter = t.scan(b"a non-present key before yo!");
+/// let mut iter = t.scan(b"a non-present key before yo!".to_vec());
 /// // assert_eq!(iter.next(), Some(Ok((b"yo!".to_vec(), b"v2".to_vec()))));
 /// // assert_eq!(iter.next(), None);
 ///
-/// t.del(b"yo!");
-/// assert_eq!(t.get(b"yo!"), Ok(None));
+/// t.del(b"yo!".to_vec());
+/// assert_eq!(t.get(b"yo!".to_vec()), Ok(None));
 /// ```
 #[derive(Clone)]
 pub struct Tree {
@@ -341,7 +341,7 @@ impl Tree {
     ///
     /// Note that this is not atomic.
     pub fn clear(&self) -> Result<(), ()> {
-        for k in self.keys(b"") {
+        for k in self.iter().keys() {
             let key = k?;
             self.del(key)?;
         }
@@ -358,7 +358,7 @@ impl Tree {
 
     /// Returns `true` if the `Tree` contains a value for
     /// the specified key.
-    pub fn contains_key<K: AsRef<[u8]>>(
+    pub fn contains_key<K: Borrow<[u8]>>(
         &self,
         key: K,
     ) -> Result<bool, ()> {
@@ -366,7 +366,7 @@ impl Tree {
     }
 
     /// Retrieve a value from the `Tree` if it exists.
-    pub fn get<K: AsRef<[u8]>>(
+    pub fn get<K: Borrow<[u8]>>(
         &self,
         key: K,
     ) -> Result<Option<PinnedValue>, ()> {
@@ -377,7 +377,7 @@ impl Tree {
         // the double guard is a hack that maintains
         // correctness of the ret value
         let double_guard = guard.clone();
-        let (_, ret) = self.get_internal(key.as_ref(), &guard)?;
+        let (_, ret) = self.get_internal(key, &guard)?;
 
         guard.flush();
 
@@ -406,7 +406,7 @@ impl Tree {
     /// assert!(tree.get_lt(vec![10]).unwrap().unwrap().1 == vec![9]);
     /// assert!(tree.get_lt(vec![255]).unwrap().unwrap().1 == vec![9]);
     /// ```
-    pub fn get_lt<K: AsRef<[u8]>>(
+    pub fn get_lt<K: Borrow<[u8]>>(
         &self,
         key: K,
     ) -> Result<Option<(Key, PinnedValue)>, ()> {
@@ -417,7 +417,7 @@ impl Tree {
         let guard = pin();
         let double_guard = guard.clone();
 
-        let path = self.path_for_key(key.as_ref(), &guard)?;
+        let path = self.path_for_key(key.borrow(), &guard)?;
         let (last_frag, _tree_ptr) = path
             .last()
             .expect("path should always contain a last element");
@@ -427,7 +427,7 @@ impl Tree {
         let items =
             data.leaf_ref().expect("last_node should be a leaf");
         let search = leaf_search(Less, items, |&(ref k, ref _v)| {
-            prefix_cmp_encoded(k, key.as_ref(), &last_node.lo)
+            prefix_cmp_encoded(k, key.borrow(), &last_node.lo)
         });
 
         let ret = if search.is_none() {
@@ -476,7 +476,7 @@ impl Tree {
     /// assert!(tree.get_gt(vec![8]).unwrap().unwrap().1 == vec![9]);
     /// assert!(tree.get_gt(vec![9]).unwrap().is_none());
     /// ```
-    pub fn get_gt<K: AsRef<[u8]>>(
+    pub fn get_gt<K: Borrow<[u8]>>(
         &self,
         key: K,
     ) -> Result<Option<(Key, PinnedValue)>, ()> {
@@ -487,7 +487,7 @@ impl Tree {
         let guard = pin();
         let double_guard = guard.clone();
 
-        let path = self.path_for_key(key.as_ref(), &guard)?;
+        let path = self.path_for_key(key.borrow(), &guard)?;
         let (last_frag, _tree_ptr) = path
             .last()
             .expect("path should always contain a last element");
@@ -498,7 +498,7 @@ impl Tree {
             data.leaf_ref().expect("last_node should be a leaf");
         let search =
             leaf_search(Greater, items, |&(ref k, ref _v)| {
-                prefix_cmp_encoded(k, key.as_ref(), &last_node.lo)
+                prefix_cmp_encoded(k, key.borrow(), &last_node.lo)
             });
 
         let ret = if search.is_none() {
@@ -551,7 +551,7 @@ impl Tree {
     /// assert_eq!(t.cas(&[1], Some(&[2]), None), Ok(()));
     /// assert_eq!(t.get(&[1]), Ok(None));
     /// ```
-    pub fn cas<K: AsRef<[u8]>>(
+    pub fn cas<K: Borrow<[u8]>>(
         &self,
         key: K,
         old: Option<&[u8]>,
@@ -570,17 +570,17 @@ impl Tree {
         loop {
             let pin_guard = guard.clone();
             let (mut path, cur) = self
-                .get_internal(key.as_ref(), &guard)
+                .get_internal(key.borrow(), &guard)
                 .map_err(|e| e.danger_cast())?;
 
-            if old.as_ref().map(|o| o.as_ref()) != cur.map(|v| &*v) {
+            if old.map(|o| o) != cur.map(|v| &*v) {
                 return Err(Error::CasFailed(
                     cur.map(|c| PinnedValue::new(c, pin_guard)),
                 ));
             }
 
             let mut subscriber_reservation =
-                self.subscriptions.reserve(&key);
+                self.subscriptions.reserve(key.borrow());
 
             let (leaf_frag, leaf_ptr) = path.pop().expect(
                 "get_internal somehow returned a path of length zero",
@@ -588,7 +588,7 @@ impl Tree {
 
             let (node_id, encoded_key) = {
                 let node: &Node = leaf_frag.unwrap_base();
-                (node.id, prefix_encode(&node.lo, key.as_ref()))
+                (node.id, prefix_encode(&node.lo, key.borrow()))
             };
             let frag = if let Some(ref n) = new {
                 Frag::Set(encoded_key, n.clone())
@@ -606,12 +606,12 @@ impl Tree {
                     if let Some(res) = subscriber_reservation.take() {
                         let event = if new.is_some() {
                             subscription::Event::Set(
-                                key.as_ref().to_vec(),
+                                key.borrow().to_vec(),
                                 new.unwrap().clone(),
                             )
                         } else {
                             subscription::Event::Del(
-                                key.as_ref().to_vec(),
+                                key.borrow().to_vec(),
                             )
                         };
 
@@ -633,7 +633,7 @@ impl Tree {
 
     /// Set a key to a new value, returning the old value if it
     /// was set.
-    pub fn set<K: AsRef<[u8]>>(
+    pub fn set<K: Borrow<[u8]>>(
         &self,
         key: K,
         value: Value,
@@ -651,16 +651,16 @@ impl Tree {
         loop {
             let double_guard = guard.clone();
             let (mut path, existing_key) =
-                self.get_internal(key.as_ref(), &guard)?;
+                self.get_internal(key.borrow(), &guard)?;
             let (leaf_frag, leaf_ptr) = path.pop().expect(
                 "path_for_key should always return a path \
                  of length >= 2 (root + leaf)",
             );
             let node: &Node = leaf_frag.unwrap_base();
-            let encoded_key = prefix_encode(&node.lo, key.as_ref());
+            let encoded_key = prefix_encode(&node.lo, key.borrow());
 
             let mut subscriber_reservation =
-                self.subscriptions.reserve(&key);
+                self.subscriptions.reserve(key.borrow());
 
             let frag = Frag::Set(encoded_key, value.clone());
             let link = self.pages.link(
@@ -674,7 +674,7 @@ impl Tree {
                     // success
                     if let Some(res) = subscriber_reservation.take() {
                         let event = subscription::Event::Set(
-                            key.as_ref().to_vec(),
+                            key.borrow().to_vec(),
                             value.clone(),
                         );
 
@@ -727,7 +727,7 @@ impl Tree {
     /// assert_eq!(t.del(&*vec![1]).unwrap().unwrap(), vec![1]);
     /// assert_eq!(t.del(&*vec![1]), Ok(None));
     /// ```
-    pub fn del<K: AsRef<[u8]>>(
+    pub fn del<K: Borrow<[u8]>>(
         &self,
         key: K,
     ) -> Result<Option<PinnedValue>, ()> {
@@ -742,17 +742,17 @@ impl Tree {
 
         loop {
             let (mut path, existing_key) =
-                self.get_internal(key.as_ref(), &guard)?;
+                self.get_internal(key.borrow(), &guard)?;
 
             let mut subscriber_reservation =
-                self.subscriptions.reserve(&key);
+                self.subscriptions.reserve(key.borrow());
 
             let (leaf_frag, leaf_ptr) = path.pop().expect(
                 "path_for_key should always return a path \
                  of length >= 2 (root + leaf)",
             );
             let node: &Node = leaf_frag.unwrap_base();
-            let encoded_key = prefix_encode(&node.lo, key.as_ref());
+            let encoded_key = prefix_encode(&node.lo, key.borrow());
 
             let frag = Frag::Del(encoded_key);
             let link = self.pages.link(
@@ -767,7 +767,7 @@ impl Tree {
                     // success
                     if let Some(res) = subscriber_reservation.take() {
                         let event = subscription::Event::Del(
-                            key.as_ref().to_vec(),
+                            key.borrow().to_vec(),
                         );
 
                         res.complete(event);
@@ -839,7 +839,7 @@ impl Tree {
     /// tree.merge(k, vec![4]);
     /// // assert_eq!(tree.get(k).unwrap().unwrap(), vec![4]);
     /// ```
-    pub fn merge<K: AsRef<[u8]>>(
+    pub fn merge<K: Borrow<[u8]>>(
         &self,
         key: K,
         value: Value,
@@ -855,14 +855,14 @@ impl Tree {
         let guard = pin();
 
         loop {
-            let mut path = self.path_for_key(key.as_ref(), &guard)?;
+            let mut path = self.path_for_key(key.borrow(), &guard)?;
             let (leaf_frag, leaf_ptr) = path.pop().expect(
                 "path_for_key should always return a path \
                  of length >= 2 (root + leaf)",
             );
             let node: &Node = leaf_frag.unwrap_base();
 
-            let encoded_key = prefix_encode(&node.lo, key.as_ref());
+            let encoded_key = prefix_encode(&node.lo, key.borrow());
             let frag = Frag::Merge(encoded_key, value.clone());
 
             let link = self.pages.link(
@@ -936,21 +936,21 @@ impl Tree {
     ///     .build();
     /// let t = sled::Tree::start(config).unwrap();
     ///
-    /// t.set(b"0", vec![0]).unwrap();
-    /// t.set(b"1", vec![10]).unwrap();
-    /// t.set(b"2", vec![20]).unwrap();
-    /// t.set(b"3", vec![30]).unwrap();
-    /// t.set(b"4", vec![40]).unwrap();
-    /// t.set(b"5", vec![50]).unwrap();
+    /// t.set(b"0".to_vec(), vec![0]).unwrap();
+    /// t.set(b"1".to_vec(), vec![10]).unwrap();
+    /// t.set(b"2".to_vec(), vec![20]).unwrap();
+    /// t.set(b"3".to_vec(), vec![30]).unwrap();
+    /// t.set(b"4".to_vec(), vec![40]).unwrap();
+    /// t.set(b"5".to_vec(), vec![50]).unwrap();
     ///
-    /// let mut r = t.scan(b"2");
+    /// let mut r = t.scan(b"2".to_vec());
     /// assert_eq!(r.next().unwrap().unwrap().0, b"2");
     /// assert_eq!(r.next().unwrap().unwrap().0, b"3");
     /// assert_eq!(r.next().unwrap().unwrap().0, b"4");
     /// assert_eq!(r.next().unwrap().unwrap().0, b"5");
     /// assert_eq!(r.next(), None);
 
-    /// let mut r = t.scan(b"2").rev();
+    /// let mut r = t.scan(b"2".to_vec()).rev();
     /// assert_eq!(r.next().unwrap().unwrap().0, b"2");
     /// assert_eq!(r.next().unwrap().unwrap().0, b"1");
     /// assert_eq!(r.next().unwrap().unwrap().0, b"0");
@@ -958,7 +958,7 @@ impl Tree {
     /// ```
     pub fn scan<K>(&self, key: K) -> Iter<'_>
     where
-        K: AsRef<[u8]>,
+        K: Borrow<[u8]>,
     {
         let mut iter = self.range(key..);
         iter.is_scan = true;
@@ -999,7 +999,7 @@ impl Tree {
     /// ```
     pub fn range<K, R>(&self, range: R) -> Iter<'_>
     where
-        K: AsRef<[u8]>,
+        K: Borrow<[u8]>,
         R: RangeBounds<K>,
     {
         let _measure = Measure::new(&M.tree_scan);
@@ -1007,20 +1007,20 @@ impl Tree {
         let guard = pin();
 
         let lo = match range.start_bound() {
-            ops::Bound::Included(ref end) => {
-                ops::Bound::Included(end.as_ref().to_vec())
+            ops::Bound::Included(end) => {
+                ops::Bound::Included(end.borrow().to_vec())
             }
-            ops::Bound::Excluded(ref end) => {
-                ops::Bound::Excluded(end.as_ref().to_vec())
+            ops::Bound::Excluded(end) => {
+                ops::Bound::Excluded(end.borrow().to_vec())
             }
             ops::Bound::Unbounded => ops::Bound::Unbounded,
         };
         let hi = match range.end_bound() {
-            ops::Bound::Included(ref end) => {
-                ops::Bound::Included(end.as_ref().to_vec())
+            ops::Bound::Included(end) => {
+                ops::Bound::Included(end.borrow().to_vec())
             }
-            ops::Bound::Excluded(ref end) => {
-                ops::Bound::Excluded(end.as_ref().to_vec())
+            ops::Bound::Excluded(end) => {
+                ops::Bound::Excluded(end.borrow().to_vec())
             }
             ops::Bound::Unbounded => ops::Bound::Unbounded,
         };
@@ -1055,7 +1055,7 @@ impl Tree {
     /// ```
     pub fn keys<K>(&self, key: K) -> Keys<'_>
     where
-        K: AsRef<[u8]>,
+        K: Borrow<[u8]>,
     {
         self.scan(key).keys()
     }
@@ -1075,7 +1075,7 @@ impl Tree {
     /// // assert_eq!(iter.next(), Some(Ok(vec![30])));
     /// // assert_eq!(iter.next(), None);
     /// ```
-    pub fn values<K: AsRef<[u8]>>(&self, key: K) -> Values<'_> {
+    pub fn values<K: Borrow<[u8]>>(&self, key: K) -> Values<'_> {
         self.scan(key).values()
     }
 
@@ -1316,12 +1316,12 @@ impl Tree {
         }
     }
 
-    fn get_internal<'g, K: AsRef<[u8]>>(
+    fn get_internal<'g, K: Borrow<[u8]>>(
         &self,
         key: K,
         guard: &'g Guard,
     ) -> Result<(Path<'g>, Option<&'g [u8]>), ()> {
-        let path = self.path_for_key(key.as_ref(), guard)?;
+        let path = self.path_for_key(key.borrow(), guard)?;
 
         let ret = path.last().and_then(|(last_frag, _tree_ptr)| {
             let last_node = last_frag.unwrap_base();
@@ -1330,7 +1330,7 @@ impl Tree {
                 data.leaf_ref().expect("last_node should be a leaf");
             let search = items
                 .binary_search_by(|&(ref k, ref _v)| {
-                    prefix_cmp_encoded(k, key.as_ref(), &last_node.lo)
+                    prefix_cmp_encoded(k, key.borrow(), &last_node.lo)
                 })
                 .ok();
 
@@ -1341,10 +1341,10 @@ impl Tree {
     }
 
     #[doc(hidden)]
-    pub fn key_debug_str<K: AsRef<[u8]>>(&self, key: K) -> String {
+    pub fn key_debug_str<K: Borrow<[u8]>>(&self, key: K) -> String {
         let guard = pin();
 
-        let path = self.path_for_key(key.as_ref(), &guard).expect(
+        let path = self.path_for_key(key, &guard).expect(
             "path_for_key should always return at least 2 nodes, \
              even if the key being searched for is not present",
         );
@@ -1360,7 +1360,7 @@ impl Tree {
 
     /// returns the traversal path, completing any observed
     /// partially complete splits or merges along the way.
-    pub(crate) fn path_for_key<'g, K: AsRef<[u8]>>(
+    pub(crate) fn path_for_key<'g, K: Borrow<[u8]>>(
         &self,
         key: K,
         guard: &'g Guard,
@@ -1409,13 +1409,13 @@ impl Tree {
 
             // TODO this may need to change when handling (half) merges
             assert!(
-                &*node.lo <= key.as_ref(),
+                &*node.lo <= key.borrow(),
                 "overshot key somehow"
             );
 
             // half-complete split detect & completion
             // (when hi is empty, it means it's unbounded)
-            if !node.hi.is_empty() && &*node.hi <= key.as_ref() {
+            if !node.hi.is_empty() && &*node.hi <= key.borrow() {
                 // we have encountered a child split, without
                 // having hit the parent split above.
                 cursor = node.next.expect(
@@ -1472,7 +1472,7 @@ impl Tree {
                         |&(ref k, ref _v)| {
                             prefix_cmp_encoded(
                                 k,
-                                key.as_ref(),
+                                key.borrow(),
                                 &node.lo,
                             )
                         },
