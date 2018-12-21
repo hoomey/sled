@@ -264,7 +264,7 @@ fn run_tree_crashes_nicely(ops: Vec<Op>, flusher: bool) -> bool {
                 restart!();
             }
             FailPoint(fp) => {
-                fail_points.insert(fp.clone());
+                fail_points.insert(fp);
                 fail::cfg(&*fp, "return")
                     .expect("should be able to configure failpoint");
             }
@@ -860,6 +860,15 @@ fn failpoints_bug_14() {
             Set,
             Set,
         ],
+        false,
+    ))
+}
+
+#[test]
+fn failpoints_bug_15() {
+    // postmortem 1:
+    assert!(prop_tree_crashes_nicely(
+        vec![FailPoint("buffer write"), Id, Restart, Id],
         false,
     ))
 }

@@ -196,11 +196,11 @@ impl IoBufs {
         gc_blobs(&config, stable)?;
 
         Ok(IoBufs {
-            config: config,
+            config,
 
             buf_mu: Mutex::new(()),
             buf_updated: Condvar::new(),
-            bufs: bufs,
+            bufs,
             current_buf: AtomicUsize::new(current_buf),
             written_bufs: AtomicUsize::new(0),
 
@@ -239,6 +239,33 @@ impl IoBufs {
         M.accountant_hold.measure(clock() - locked_at);
 
         ret
+    }
+
+    /// Return an iterator over the log, starting with
+    /// a specified offset.
+    pub(crate) fn iter_from(&self, lsn: Lsn) -> LogIter {
+        trace!("iterating from lsn {}", lsn);
+        let io_buf_size = self.config.io_buf_size;
+        let segment_base_lsn =
+            lsn / io_buf_size as Lsn * io_buf_size as Lsn;
+        let min_lsn = segment_base_lsn + SEG_HEADER_LEN as Lsn;
+
+        // corrected_lsn accounts for the segment header length
+        let corrected_lsn = std::cmp::max(lsn, min_lsn);
+
+        let segment_iter = self.with_sa(|sa| {
+            sa.segment_snapshot_iter_from(corrected_lsn)
+        });
+
+        LogIter {
+            config: self.config.clone(),
+            max_lsn: self.stable(),
+            cur_lsn: corrected_lsn,
+            segment_base: None,
+            segment_iter: segment_iter,
+            segment_len: io_buf_size,
+            trailer: None,
+        }
     }
 
     fn idx(&self) -> usize {
@@ -282,9 +309,9 @@ impl IoBufs {
             } else {
                 MessageKind::Inline
             },
-            lsn: lsn,
+            lsn,
             len: buf.len(),
-            crc16: crc16,
+            crc16,
         };
 
         let header_bytes: [u8; MSG_HEADER_LEN] = header.into();
@@ -515,9 +542,9 @@ impl IoBufs {
             let res_end = res_start + inline_buf_len;
             let destination = &mut (out_buf)[res_start..res_end];
 
-            let reservation_offset = lid + u64::from(buf_offset);
+            let reservation_offset = lid + buf_offset;
             let reservation_lsn =
-                iobuf.get_lsn() + u64::from(buf_offset) as Lsn;
+                iobuf.get_lsn() + buf_offset as Lsn;
 
             trace!(
                 "reserved {} bytes at lsn {} lid {}",
@@ -540,10 +567,10 @@ impl IoBufs {
             M.log_reservation_success();
 
             return Ok(Reservation {
-                idx: idx,
+                idx,
                 iobufs: self,
                 data: encapsulated_buf,
-                destination: destination,
+                destination,
                 flushed: false,
                 lsn: reservation_lsn,
                 lid: reservation_offset,
@@ -772,8 +799,7 @@ impl IoBufs {
             );
             next_lsn += res_len as Lsn;
 
-            let next_offset = lid + res_len as LogId;
-            next_offset
+            lid + res_len as LogId
         };
 
         let next_idx = (idx + 1) % self.config.io_bufs;
@@ -891,8 +917,8 @@ impl IoBufs {
             let header = MessageHeader {
                 kind: MessageKind::Pad,
                 lsn: base_lsn + offset as Lsn,
-                len: len,
-                crc16: crc16,
+                len,
+                crc16,
             };
 
             let header_bytes: [u8; MSG_HEADER_LEN] = header.into();
@@ -1191,7 +1217,7 @@ impl IoBuf {
 
         self.set_lsn(lsn);
 
-        let header = SegmentHeader { lsn: lsn, ok: true };
+        let header = SegmentHeader { lsn, ok: true };
         let header_bytes: [u8; SEG_HEADER_LEN] = header.into();
 
         unsafe {
@@ -1333,7 +1359,7 @@ fn bump_offset(v: Header, by: Header) -> Header {
 
 #[cfg_attr(not(feature = "no_inline"), inline)]
 fn bump_salt(v: Header) -> Header {
-    (v + (1 << 32)) & 0xFFFFFFFF00000000
+    (v + (1 << 32)) & 0xFFFF_FFFF_0000_0000
 }
 
 #[cfg_attr(not(feature = "no_inline"), inline)]

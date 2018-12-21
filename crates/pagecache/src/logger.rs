@@ -35,7 +35,7 @@ use super::*;
 /// to know where to find persisted bits in the future.
 pub struct Log {
     /// iobufs is the underlying lock-free IO write buffer.
-    iobufs: Arc<IoBufs>,
+    pub(super) iobufs: Arc<IoBufs>,
     config: Config,
     /// Periodically flushes `iobufs`.
     _flusher: Option<flusher::Flusher>,
@@ -61,8 +61,8 @@ impl Log {
         });
 
         Ok(Log {
-            iobufs: iobufs,
-            config: config,
+            iobufs,
+            config,
             _flusher: flusher,
         })
     }
@@ -113,28 +113,7 @@ impl Log {
     /// Return an iterator over the log, starting with
     /// a specified offset.
     pub fn iter_from(&self, lsn: Lsn) -> LogIter {
-        trace!("iterating from lsn {}", lsn);
-        let io_buf_size = self.config.io_buf_size;
-        let segment_base_lsn =
-            lsn / io_buf_size as Lsn * io_buf_size as Lsn;
-        let min_lsn = segment_base_lsn + SEG_HEADER_LEN as Lsn;
-
-        // corrected_lsn accounts for the segment header length
-        let corrected_lsn = std::cmp::max(lsn, min_lsn);
-
-        let segment_iter = self.with_sa(|sa| {
-            sa.segment_snapshot_iter_from(corrected_lsn)
-        });
-
-        LogIter {
-            config: self.config.clone(),
-            max_lsn: self.stable_offset(),
-            cur_lsn: corrected_lsn,
-            segment_base: None,
-            segment_iter: segment_iter,
-            segment_len: io_buf_size,
-            trailer: None,
-        }
+        self.iobufs.iter_from(lsn)
     }
 
     /// read a buffer from the disk
@@ -164,7 +143,6 @@ impl Log {
                 }
                 _ => Ok(log_read),
             })
-            .map_err(|e| e.into())
         } else {
             let (_lid, blob_ptr) = ptr.blob();
             read_blob(blob_ptr, &self.config)
@@ -346,10 +324,10 @@ impl From<[u8; MSG_HEADER_LEN]> for MessageHeader {
         let crc16 = [buf[13] ^ 0xFF, buf[14] ^ 0xFF];
 
         MessageHeader {
-            kind: kind,
-            lsn: lsn,
+            kind,
+            lsn,
             len: len as usize,
-            crc16: crc16,
+            crc16,
         }
     }
 }
@@ -395,7 +373,7 @@ impl From<[u8; SEG_HEADER_LEN]> for SegmentHeader {
         let crc16_tested = crc16_arr(&lsn_arr);
 
         SegmentHeader {
-            lsn: lsn,
+            lsn,
             ok: crc16_tested == crc16,
         }
     }
@@ -431,7 +409,7 @@ impl From<[u8; SEG_TRAILER_LEN]> for SegmentTrailer {
         let crc16_tested = crc16_arr(&lsn_arr);
 
         SegmentTrailer {
-            lsn: lsn,
+            lsn,
             ok: crc16_tested == crc16,
         }
     }

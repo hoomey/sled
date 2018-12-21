@@ -8,13 +8,15 @@ publish = false
 debug = true
 
 [features]
-default = []
+default = ["async_snapshots"]
+async_snapshots = ["sled/async_snapshots"]
 lock_free_delays = ["sled/lock_free_delays"]
 check_snapshot_integrity = ["sled/check_snapshot_integrity"]
 compression = ["sled/compression"]
 no_logs = ["sled/no_logs"]
 no_metrics = ["sled/no_metrics"]
 measure_allocs = ["sled/measure_allocs"]
+no_jemalloc = []
 
 [dependencies]
 serde = "1.0"

@@ -5,12 +5,13 @@ use std::{
     ops::Deref,
     path::{Path, PathBuf},
     sync::{
-        atomic::{
-            AtomicPtr, AtomicUsize, Ordering, ATOMIC_USIZE_INIT,
-        },
+        atomic::{AtomicPtr, AtomicUsize, Ordering},
         Arc, Mutex,
     },
 };
+
+#[cfg(unix)]
+use std::sync::atomic::ATOMIC_USIZE_INIT;
 
 use bincode::{deserialize, serialize};
 use fs2::FileExt;
@@ -19,7 +20,7 @@ use serde::Serialize;
 
 use super::*;
 
-const DEFAULT_PATH: &'static str = "default.sled";
+const DEFAULT_PATH: &str = "default.sled";
 
 impl Deref for Config {
     type Target = ConfigBuilder;
@@ -191,8 +192,18 @@ impl ConfigBuilder {
             self.path = PathBuf::from(tmp_path);
         }
 
-        #[cfg(feature = "event_log")]
-        panic!("OHNO");
+        let threads = Arc::new(AtomicUsize::new(0));
+        let start_threads = threads.clone();
+        let end_threads = threads.clone();
+        let thread_pool = rayon::ThreadPoolBuilder::new()
+            .start_handler(move |_id| {
+                start_threads.fetch_add(1, SeqCst);
+            })
+            .exit_handler(move |_id| {
+                end_threads.fetch_sub(1, SeqCst);
+            })
+            .build()
+            .expect("should be able to start rayon threadpool");
 
         // seal config in a Config
         Config {
@@ -202,6 +213,8 @@ impl ConfigBuilder {
             refs: Arc::new(AtomicUsize::new(0)),
             #[cfg(feature = "event_log")]
             event_log: Arc::new(crate::event_log::EventLog::default()),
+            thread_pool: Some(Arc::new(thread_pool)),
+            threads,
         }
     }
 
@@ -234,6 +247,8 @@ pub struct Config {
     inner: Arc<ConfigBuilder>,
     file: Arc<AtomicPtr<Arc<fs::File>>>,
     build_locker: Arc<Mutex<()>>,
+    pub(crate) thread_pool: Option<Arc<rayon::ThreadPool>>,
+    threads: Arc<AtomicUsize>,
     refs: Arc<AtomicUsize>,
     #[cfg(feature = "event_log")]
     /// an event log for concurrent debugging
@@ -253,6 +268,8 @@ impl Clone for Config {
             refs: self.refs.clone(),
             #[cfg(feature = "event_log")]
             event_log: self.event_log.clone(),
+            threads: self.threads.clone(),
+            thread_pool: self.thread_pool.clone(),
         }
     }
 }
@@ -261,6 +278,18 @@ impl Drop for Config {
     fn drop(&mut self) {
         // if our ref count is 0 we can drop and close our file properly.
         if self.refs.fetch_sub(1, Ordering::SeqCst) == 0 {
+            // wait on thread pool to close
+            debug!("dropping threadpool and waiting for it to drain");
+            let thread_pool = self.thread_pool.take();
+            drop(thread_pool);
+
+            while self.threads.load(SeqCst) != 0 {
+                std::thread::sleep(std::time::Duration::from_millis(
+                    50,
+                ));
+            }
+            debug!("threadpool drained");
+
             let f_ptr: *mut Arc<fs::File> = self
                 .file
                 .swap(std::ptr::null_mut(), Ordering::Relaxed);
@@ -415,7 +444,7 @@ impl Config {
         match options.open(&path) {
             Ok(file) => {
                 // try to exclusively lock the file
-                if let Err(_) = file.try_lock_exclusive() {
+                if file.try_lock_exclusive().is_err() {
                     return Err(Error::Io(std::io::Error::new(
                         std::io::ErrorKind::Other,
                         "could not acquire exclusive file lock",
@@ -507,7 +536,7 @@ impl Config {
                 );
                 Ok(())
             }
-            Ok(None) => self.write_config().map_err(|e| e.into()),
+            Ok(None) => self.write_config(),
             Err(e) => Err(e.into()),
         }
     }

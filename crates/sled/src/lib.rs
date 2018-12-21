@@ -34,7 +34,6 @@
 #![cfg_attr(feature = "clippy", allow(inline_always))]
 
 mod binary_search;
-mod bound;
 mod data;
 mod db;
 mod frag;
@@ -67,7 +66,6 @@ use self::{
         binary_search_gt, binary_search_lt, binary_search_lub,
         leaf_search,
     },
-    bound::Bound,
     data::Data,
     frag::{ChildSplit, ParentSplit},
     node::Node,
